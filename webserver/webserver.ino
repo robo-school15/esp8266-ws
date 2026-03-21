@@ -6,8 +6,8 @@
  * Після підключення до внутрішньої точки доступу wifi (ESP_Config), вебсервер буде доступний з браузера по
  * адресі http://192.168.4.1.
  * Для підключення до модуля до іншого роутера, необхідно зайти на сторінку:
- * http://192.168.4.1/config та ввести параметри підключення до іншого wifi-роутера. Ввести SSID та Password.
- *  
+ * http://192.168.4.1/config та ввести параметри підключення до іншого wifi-роутера. Ввести SSID, Password та активувати чекбокс 'Enable WiFi STA'.
+ * 
  * Після збереження та перезавантаження, вебсервер esp8266 стане доступним у внутрішній мережі за тією адресою,
  * яку видав йому wifi-роутер вашої мережі.
  * 
@@ -19,38 +19,131 @@
 #include <EEPROM.h>
 
 // Конфігурація:
-
 #define EEPROM_SIZE 4096
-#define STREAM_INTERVAL 50   // ms
+#define STREAM_MIN_INTERVAL 20    // ms
+#define STREAM_MAX_INTERVAL 1000  // ms
+#define STREAM_DEF_INTERVAL 100    // ms
 
 ESP8266WebServer server(80);
 WiFiClient streamClient;
 
+// Параметри вбудованої в модуль ESP8266 wifi точки доступу:
 const char* ap_ssid = "ESP_Config";
 const char* ap_pass = "12345678";
 
-struct WifiConfig {
-  char ssid[32];
-  char password[32];
+// кодове слово для перевірки цілісності конфіга в EEPROM
+#define CONFIG_MAGIC 0xDEADBEEF
+
+struct Config {
+
+  uint32_t magic;
+
+  struct wifi {
+    char ssid[32];      // SSID зовнішньої точки доступу wifi
+    char password[32];  // пароль зовнішньої точки доступу wifi
+    bool enabled;       // признак використання зовнішньої точки доступу
+  } wifi;
+  
+  struct filter {
+    bool  enabled;   // увімкнено / вимкнено
+    float alpha;    // коефіцієнт згладжування
+  } filter;
+
+  struct sensor {
+    uint16_t intervalMs;   // інтервал опитування сенсора (мс)
+  } sensor;
 };
 
-WifiConfig wifiCfg;
-unsigned long lastSend = 0;
+Config cfg;
 
+//Ініціалізація конфіга значеннями по змовчуванню
+void setDefaults( Config& cfg ) {
+  memset(&cfg, 0, sizeof(cfg));
+
+  cfg.magic = CONFIG_MAGIC;
+
+  // WiFi
+  cfg.wifi.enabled = false;
+
+  // filter
+  cfg.filter.enabled = false;
+  cfg.filter.alpha = 0.2;
+
+  // sensor
+  cfg.sensor.intervalMs = STREAM_DEF_INTERVAL;
+}
+
+
+
+// Глобальні змінні для фільтра даних
+float filteredValue;
+bool filterInitialized;
+
+// Ініціалізація глобальних змінних
+void globalInit() {
+  filteredValue = 0;
+  filterInitialized = false;
+  cfg.filter.enabled = false;
+  cfg.filter.alpha = 0.2;
+  cfg.sensor.intervalMs = STREAM_DEF_INTERVAL;
+}
+
+
+// Функція фільтрації даних
+float applyFilter(float newValue) {
+  if (!cfg.filter.enabled) return newValue;
+
+  if (!filterInitialized) {
+    filteredValue = newValue;
+    filterInitialized = true;
+  } else {
+    filteredValue = cfg.filter.alpha * newValue +
+                    (1.0 - cfg.filter.alpha) * filteredValue;
+  }
+
+  return filteredValue;
+}
+
+
+unsigned long lastSend = 0;
 
 // Читання і запис  конфігурації на флеш (EEPROM):
 void loadConfig() {
   EEPROM.begin(EEPROM_SIZE);
-  EEPROM.get(0, wifiCfg);
+ 
+  EEPROM.get(0, cfg);
 
-  if (wifiCfg.ssid[0] == 0xFF || wifiCfg.ssid[0] == '\0') {
-    wifiCfg.ssid[0] = 0;
-    wifiCfg.password[0] = 0;
+  // перевірка magic
+  if (cfg.magic != CONFIG_MAGIC) {
+    setDefaults(cfg);
+    saveConfig();
+    return;
   }
+
+  if (cfg.wifi.ssid[0] == 0xFF || cfg.wifi.ssid[0] == '\0') {
+    cfg.wifi.ssid[0] = 0;
+    cfg.wifi.password[0] = 0;
+    cfg.wifi.enabled = false;
+  }
+
+  // alpha
+  if (cfg.filter.alpha <= 0 || cfg.filter.alpha > 1) {
+    cfg.filter.alpha = 0.2;
+  } 
+
+  cfg.wifi.enabled   = cfg.wifi.enabled ? true : false;
+  cfg.filter.enabled = cfg.filter.enabled ? true : false;
+
+  // interval
+  if (cfg.sensor.intervalMs < STREAM_MIN_INTERVAL || cfg.sensor.intervalMs > STREAM_MAX_INTERVAL) {
+    cfg.sensor.intervalMs = STREAM_DEF_INTERVAL;
+  }
+  
 }
 
 void saveConfig() {
-  EEPROM.put(0, wifiCfg);
+  cfg.magic = CONFIG_MAGIC;
+  EEPROM.put(0, cfg);
   EEPROM.commit();
 }
 
@@ -65,29 +158,28 @@ void setupWiFi() {
 
   Serial.println("setupWiFi:");
 
-  if (strlen(wifiCfg.ssid) > 0) {
-    Serial.println("ssid=" + String(wifiCfg.ssid));
-    Serial.println("password="+ String(wifiCfg.password));
+  if (cfg.wifi.enabled && strlen(cfg.wifi.ssid) > 0) {
+    // Виводимо в монітор комп'ютера для перевірки (відладки)
+    Serial.println("ssid=" + String(cfg.wifi.ssid));
+    Serial.println("password="+ String(cfg.wifi.password));
 
+    WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
 
-
-    WiFi.begin(wifiCfg.ssid, wifiCfg.password);
-
-    while (WiFi.status() !=WL_CONNECTED){
+    // Чекаємо приєднання до віддаленої точки доступу
+    while (WiFi.status() != WL_CONNECTED){
       delay(500);
       Serial.print(".");
     }
     
-    if (WiFi.status()==WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED) {
       Serial.println("WIFI Connected");
     }
     
-
     Serial.println("IP: " + WiFi.localIP().toString());
   }
 }
 
-
+/*
 // HTML-сторінка з графіком:
 const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -136,11 +228,120 @@ draw();
 </body>
 </html>
 )rawliteral";
+*/
 
+const char INDEX_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Sensor Graph</title>
+  <style>
+    body { font-family: sans-serif; }
+    canvas { border: 1px solid black; }
+  </style>
+</head>
+<body>
+  <h3>Sensor value over time</h3>
+  <canvas id="graph" width="600" height="300"></canvas>
+
+  <script>
+    const canvas = document.getElementById('graph');
+    const ctx = canvas.getContext('2d');
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    let data = []; // масив {time, value}
+    const maxPoints = 200; // кількість точок на графіку
+    const padding = 40; // для осей
+
+    // SSE підключення
+    const evtSource = new EventSource("/stream");
+    evtSource.onmessage = function(e) {
+      const val = parseFloat(e.data);
+      const now = Date.now();
+      data.push({time: now, value: val});
+      if (data.length > maxPoints) data.shift();
+      drawGraph();
+    };
+
+    function drawGraph() {
+      if (data.length === 0) return;
+
+      ctx.clearRect(0, 0, width, height);
+
+      // знаходимо min/max для автоскейлу
+      let min = Math.min(...data.map(d=>d.value));
+      let max = Math.max(...data.map(d=>d.value));
+
+      // невеликий запас зверху/знизу
+      const range = max - min || 1;
+      min -= 0.1*range;
+      max += 0.1*range;
+
+      // координатні осі
+      ctx.strokeStyle = "#000";
+      ctx.beginPath();
+      ctx.moveTo(padding, 0);
+      ctx.lineTo(padding, height-padding);
+      ctx.lineTo(width, height-padding);
+      ctx.stroke();
+
+      // підписи OY
+      ctx.fillStyle = "#000";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      const step = 5;
+      for (let i=0; i<=step; i++) {
+        const y = padding + (height - 2*padding)*(step-i)/step;
+        const val = min + (max-min)*i/step;
+        ctx.fillText(val.toFixed(1), padding-5, y);
+        ctx.beginPath();
+        ctx.moveTo(padding-3, y);
+        ctx.lineTo(padding, y);
+        ctx.stroke();
+      }
+
+      // підписи OX (час)
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      const timeStep = 5; // 5 поділок
+      const startTime = data[0].time;
+      const endTime = data[data.length-1].time;
+      for (let i=0; i<=timeStep; i++) {
+        const x = padding + (width-2*padding)*i/timeStep;
+        const t = new Date(startTime + (endTime-startTime)*i/timeStep);
+        const label = t.getMinutes() + ":" + t.getSeconds();
+        ctx.fillText(label, x, height-padding+5);
+      }
+
+      // малюємо графік
+      ctx.strokeStyle = "#f00";
+      ctx.beginPath();
+      data.forEach((d,i) => {
+        const x = padding + (width-2*padding)*(i/(data.length-1));
+        const y = padding + (height-2*padding)*(1-(d.value-min)/(max-min));
+        if (i===0) ctx.moveTo(x,y);
+        else ctx.lineTo(x,y);
+      });
+      ctx.stroke();
+    }
+  </script>
+</body>
+</html>
+)rawliteral";
 
 // SSE-стрім:
 void handleStream() {
-  WiFiClient = server.client();
+  //WiFiClient = server.client();
+
+  //streamClient = server.client();
+
+  if (streamClient && streamClient.connected()) {
+    server.send(409, "text/plain", "Stream already open");
+    return;
+  }
 
   streamClient = server.client();
 
@@ -159,26 +360,63 @@ void handleRoot() {
 }
 
 void handleConfig() {
+  String checked = cfg.wifi.enabled ? "checked" : "";
+
   String page =
     "<form method='POST' action='/save'>"
-    "SSID:<br><input name='s' value='" + String(wifiCfg.ssid) + "'><br>"
+    "SSID:<br><input name='s' value='" + String(cfg.wifi.ssid) + "'><br>"
     "PASS:<br><input name='p' type='password'><br><br>"
+    "<label>"
+    "<input type='checkbox' name='en' " + checked + ">"
+    " Enable WiFi STA"
+    "</label><br><br>"
+    "<label><input type='checkbox' name='f' " + String(cfg.filter.enabled ? "checked" : "") + "> Enable filter</label><br><br>"
+    "Alpha (0..1):<br><input name='a' value='" + String(cfg.filter.alpha, 2) + "'><br><br>"
+
+    "Interval (ms) [20..1000]: <br>"
+    "<input name='i' value='" + String(cfg.sensor.intervalMs) + "'><br><br>"
     "<input type='submit' value='Save'></form>";
+    
   server.send(200, "text/html", page);
 }
 
 void handleInfo() {
   String page =
-    "<br> SSID: " + String(wifiCfg.ssid) + "<br><br>"
-    "<br> Password: " + String(wifiCfg.password) + "<br><br>"
+    "<br> SSID: " + String(cfg.wifi.ssid) + "<br><br>"
+    "<br> Password: " + String(cfg.wifi.password) + "<br><br>"
     "<br> IP: " + WiFi.localIP().toString() + "<br><br>";
   server.send(200, "text/html", page);
 }
 
 
 void handleSave() {
-  strncpy(wifiCfg.ssid, server.arg("s").c_str(), 31);
-  strncpy(wifiCfg.password, server.arg("p").c_str(), 31);
+  strncpy(cfg.wifi.ssid, server.arg("s").c_str(), 31);
+  strncpy(cfg.wifi.password, server.arg("p").c_str(), 31);
+
+  // зберігаємо наявність чек-бокса "en" на сторінці конфіга
+  // (якщо чек-бокс вимкнений, то параметр взагалі не приходить.
+  cfg.wifi.enabled = server.hasArg("en");
+
+  // зберігаємо наявність чек-бокса "f" (фільтрування даних) на сторінці конфіга
+  cfg.filter.enabled = server.hasArg("f");
+
+  // зберігаємо значення альфа з сторінки
+  if (server.hasArg("a")) {
+    cfg.filter.alpha = server.arg("a").toFloat();
+    if (cfg.filter.alpha < 0) cfg.filter.alpha = 0;
+    if (cfg.filter.alpha > 1) cfg.filter.alpha = 1;
+  }
+
+  filterInitialized = false;
+
+  //читаємо значення інтервала опитування датчика з сторінки:
+  if (server.hasArg("i")) {
+    cfg.sensor.intervalMs = server.arg("i").toInt();
+  }
+  // обмежуємо інтервал опитування датчика: 20..1000 мс
+  if (cfg.sensor.intervalMs < 20) cfg.sensor.intervalMs = 20;
+  if (cfg.sensor.intervalMs > 1000) cfg.sensor.intervalMs = 1000;
+  
   saveConfig();
   server.send(200, "text/html", "Saved. Reboot device.");
 }
@@ -195,9 +433,14 @@ float readSensor() {
 
 
 
+
+
 //=============================================================
 
 void setup() {
+  
+  globalInit();
+  
   Serial.begin(9600);
 
   loadConfig();
@@ -212,20 +455,80 @@ void setup() {
   server.begin();
 }
 
+
+unsigned long lastWifiCheck = 0;
+const unsigned long WIFI_INTERVAL = 5000; // 5 сек; інтервал перевірки з'єднання wifi
+
+
 void loop() {
   //Serial.println("hello");
   server.handleClient();
 
+
+  // Якщо активована необхідність з'єднання до зовнішньої точки доступу wifi
+  if (cfg.wifi.enabled) {
+    // читаємо таймер
+    unsigned long now = millis();
+
+    // якщо пройшов таймаут WIFI_INTERVAL, то перевіряємо з'єднання до wifi точки доступу
+    if (now - lastWifiCheck >= WIFI_INTERVAL) {
+      lastWifiCheck = now;
+
+      static bool connecting = false;
+      
+      // перевіряємо з'єднання до зовнішньої точки доступу wifi
+      wl_status_t status = WiFi.status();
+      if (status == WL_CONNECTED) {
+        connecting = false;
+      }
+      else {
+        if (!connecting) {
+          WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
+          connecting = true;
+        }
+      }
+    }
+  }
+
+
+  // Для забезпечення SSE з'єднання при великих інтервалах опитування датчиків, посилаємо ping
+  // (щоб браузер не закрив сокет по неактивності)
+  
+  static unsigned long lastPing = 0;
+
+  if (millis() - lastPing > 2000) {
+    if (streamClient && streamClient.connected()) {
+      streamClient.println(":ping");
+      streamClient.println();
+    }
+    lastPing = millis();
+  }
+   
   if (streamClient && streamClient.connected()) {
     unsigned long now = millis();
-    if (now - lastSend >= STREAM_INTERVAL) {
+    if (now - lastSend >= cfg.sensor.intervalMs) {
       lastSend = now;
 
+      // читаємо дані з сенсора:
+      float raw = readSensor();
+      // пропускаємо дані через фільтр (для злагодження графіку)
+      float value = applyFilter(raw);
+      
       streamClient.print("data:");
-      streamClient.println(readSensor());
+      streamClient.println(value);
       streamClient.println();
+
+      lastPing = now;
 
       yield();
     }
   }
+
+  // Звільняємо ресурс streamClient, якщо сокетне з'єднання обірвалось
+  if (streamClient && !streamClient.connected()) {
+    streamClient.stop();
+    streamClient = WiFiClient();  // обнулюємо клієнт
+  }
+    
 }
+  
