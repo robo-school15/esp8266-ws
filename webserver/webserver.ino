@@ -28,8 +28,10 @@ ESP8266WebServer server(80);
 WiFiClient streamClient;
 
 // Параметри вбудованої в модуль ESP8266 wifi точки доступу:
-const char* ap_ssid = "ESP_Config";
+const char* ap_ssid = "ESP-Sensor";
 const char* ap_pass = "12345678";
+
+const char* def_graph_title = "Sensor value";
 
 // кодове слово для перевірки цілісності конфіга в EEPROM
 #define CONFIG_MAGIC 0xDEADBEEF
@@ -52,6 +54,11 @@ struct Config {
   struct sensor {
     uint16_t intervalMs;   // інтервал опитування сенсора (мс)
   } sensor;
+
+  struct ui {
+    char deviceName[32];   // SSID точки доступу
+    char graphTitle[64];   // заголовок графіка
+  } ui;
 };
 
 Config cfg;
@@ -71,6 +78,9 @@ void setDefaults( Config& cfg ) {
 
   // sensor
   cfg.sensor.intervalMs = STREAM_DEF_INTERVAL;
+
+  strcpy(cfg.ui.deviceName, ap_ssid);
+  strcpy(cfg.ui.graphTitle, def_graph_title);
 }
 
 
@@ -138,7 +148,13 @@ void loadConfig() {
   if (cfg.sensor.intervalMs < STREAM_MIN_INTERVAL || cfg.sensor.intervalMs > STREAM_MAX_INTERVAL) {
     cfg.sensor.intervalMs = STREAM_DEF_INTERVAL;
   }
-  
+
+  if (cfg.ui.deviceName[0] == 0xFF || cfg.ui.deviceName[0] == '\0') {
+    strcpy(cfg.ui.deviceName, ap_ssid);
+  }
+  if (cfg.ui.graphTitle[0] == 0xFF || cfg.ui.graphTitle[0] == '\0') {
+    strcpy(cfg.ui.graphTitle, def_graph_title);
+  }
 }
 
 void saveConfig() {
@@ -156,13 +172,14 @@ void setupWiFi(Config& cfg) {
   
   if ( !cfg.wifi.enabled ) { 
     WiFi.mode(WIFI_AP);
+    WiFi.softAP(cfg.ui.deviceName, ap_pass);
     return;
   }
 
   //Встановлюємо режим AP + STA і намагаємось з'єднатись з точкою доступу.
   //Якщо за певний таймаут з'єднання не вдається, переходимо в режим AP.
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(ap_ssid, ap_pass);
+  WiFi.softAP(cfg.ui.deviceName, ap_pass);
 
   Serial.println("setupWiFi:");
 
@@ -376,7 +393,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       });
       ctx.stroke();
     }
-  </script>
+  </script> 
 </body>
 </html>
 )rawliteral";
@@ -413,6 +430,12 @@ void handleConfig() {
 
   String page =
     "<form method='POST' action='/save'>"
+    "Device name (AP SSID):<br>"
+    "<input name='dn' value='" + String(cfg.ui.deviceName) + "'><br><br>"
+
+    "Graph title:<br>"
+    "<input name='gt' value='" + String(cfg.ui.graphTitle) + "'><br><br>"
+    
     "SSID:<br><input name='s' value='" + String(cfg.wifi.ssid) + "'><br>"
     "PASS:<br><input name='p' type='password'><br><br>"
     "<label>"
@@ -439,19 +462,25 @@ void handleInfo() {
 
 
 void handleSave() {
-  
-  String newSsid = server.arg("s");
-  
-  if (newSsid.length() > 0) {
-    strncpy(cfg.wifi.ssid, newSsid.c_str(), 31);
-    cfg.wifi.ssid[31] = '\0';
+
+  if (server.hasArg("dn")) {
+    strncpy(cfg.ui.deviceName, server.arg("dn").c_str(), sizeof(cfg.ui.deviceName));
   }
 
-  String newPass = server.arg("p");
+  if (server.hasArg("gt")) {
+    strncpy(cfg.ui.graphTitle, server.arg("gt").c_str(), sizeof(cfg.ui.graphTitle));
+  }
 
-  if (newPass.length() > 0) {
-    strncpy(cfg.wifi.password, newPass.c_str(), 31);
-    cfg.wifi.password[31] = '\0';
+  if (server.hasArg("s")) {
+    strncpy(cfg.wifi.ssid, server.arg("s").c_str(), sizeof(cfg.wifi.ssid));
+  }
+
+  if (server.hasArg("p") && server.arg("p").length() > 0) {
+    strncpy(cfg.wifi.password, server.arg("p").c_str(), sizeof(cfg.wifi.password));
+  }
+  
+  if (server.hasArg("p") && server.arg("p").length() > 0) {
+    strncpy(cfg.wifi.password, server.arg("p").c_str(), sizeof(cfg.wifi.password));
   }
 
   // зберігаємо наявність чек-бокса "en" на сторінці конфіга
