@@ -452,11 +452,60 @@ void handleConfig() {
   server.send(200, "text/html", page);
 }
 
+/*
 void handleInfo() {
   String page =
     "<br> SSID: " + String(cfg.wifi.ssid) + "<br><br>"
     "<br> Password: " + String(cfg.wifi.password) + "<br><br>"
     "<br> IP: " + WiFi.localIP().toString() + "<br><br>";
+  server.send(200, "text/html", page);
+}
+*/
+
+void handleInfo() {
+
+  String page =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='UTF-8'>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+    "<title>Device Info</title>"
+    "<style>"
+    "body{font-family:sans-serif;background:#f5f5f5;margin:0;padding:20px;}"
+    ".card{background:#fff;padding:15px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);max-width:400px;margin:auto;}"
+    "h2{text-align:center;}"
+    ".row{margin:8px 0;}"
+    ".label{color:#555;font-size:14px;}"
+    ".value{font-size:16px;font-weight:bold;word-break:break-all;}"
+    ".links{margin-top:15px;text-align:center;}"
+    "a{display:inline-block;margin:5px;padding:8px 12px;background:#007BFF;color:white;text-decoration:none;border-radius:5px;}"
+    "a:hover{background:#0056b3;}"
+    "</style>"
+    "</head><body>";
+
+  page +=
+    "<div class='card'>"
+    "<h2>Device Info</h2>"
+
+    "<div class='row'><div class='label'>Device name</div>"
+    "<div class='value'>" + String(cfg.ui.deviceName) + "</div></div>"
+
+    "<div class='row'><div class='label'>WiFi SSID</div>"
+    "<div class='value'>" + String(cfg.wifi.ssid) + "</div></div>"
+
+    "<div class='row'><div class='label'>WiFi Password</div>"
+    "<div class='value'>" + String(cfg.wifi.password) + "</div></div>"
+
+    "<div class='row'><div class='label'>IP Address</div>"
+    "<div class='value'>" + WiFi.localIP().toString() + "</div></div>";
+
+  page +=
+    "<div class='links'>"
+    "<a href='/'>📊&#128202; Graph</a>"
+    "<a href='/config'>&#9881; Config</a>"
+    "</div>"
+
+    "</div></body></html>";
+
   server.send(200, "text/html", page);
 }
 
