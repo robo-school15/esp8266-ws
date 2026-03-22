@@ -152,7 +152,15 @@ void saveConfig() {
 // Встановлюємо режим роботи wifi так, щоб esp8266 працював одночасно і як точка доступу (AP), 
 // і як клієнт, який з'єднується з мережею через інший wifi-роутер, параметри доступу якого
 // задані в wificfg.  
-void setupWiFi() {
+void setupWiFi(Config& cfg) {
+  
+  if ( !cfg.wifi.enabled ) { 
+    WiFi.mode(WIFI_AP);
+    return;
+  }
+
+  //Встановлюємо режим AP + STA і намагаємось з'єднатись з точкою доступу.
+  //Якщо за певний таймаут з'єднання не вдається, переходимо в режим AP.
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(ap_ssid, ap_pass);
 
@@ -165,10 +173,20 @@ void setupWiFi() {
 
     WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
 
+    bool wifiConnecting = true;
+    unsigned long now = millis();
+    unsigned long wifiConnectStart = now;
+
     // Чекаємо приєднання до віддаленої точки доступу
-    while (WiFi.status() != WL_CONNECTED){
+    while (WiFi.status() != WL_CONNECTED && wifiConnecting){
       delay(500);
       Serial.print(".");
+      now = millis();
+      if (now - wifiConnectStart > 15000) {  // не вдалось приєднатись протягом 15 сек.
+        WiFi.disconnect();
+        WiFi.mode(WIFI_AP);   // тільки точка доступу
+        wifiConnecting = false;
+      }
     }
     
     if (WiFi.status() == WL_CONNECTED) {
@@ -178,57 +196,6 @@ void setupWiFi() {
     Serial.println("IP: " + WiFi.localIP().toString());
   }
 }
-
-/*
-// HTML-сторінка з графіком:
-const char INDEX_HTML[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Realtime Monitor</title>
-<style>
-body { font-family: sans-serif; background:#111; color:#eee; }
-canvas { background:#000; }
-</style>
-</head>
-<body>
-<h2>Realtime data</h2>
-<canvas id="c" width="600" height="300"></canvas>
-
-<script>
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-const maxPoints = 200;
-let data = [];
-
-const src = new EventSource('/stream');
-src.onmessage = e => {
-  data.push(parseFloat(e.data));
-  if (data.length > maxPoints) data.shift();
-};
-
-function draw() {
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  ctx.beginPath();
-  ctx.strokeStyle = "#0f0";
-
-  data.forEach((v,i)=>{
-    let x = i * canvas.width / maxPoints;
-    let y = canvas.height - v * canvas.height / 100;
-    if(i===0) ctx.moveTo(x,y);
-    else ctx.lineTo(x,y);
-  });
-
-  ctx.stroke();
-  requestAnimationFrame(draw);
-}
-draw();
-</script>
-</body>
-</html>
-)rawliteral";
-*/
 
 const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -243,18 +210,40 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 </head>
 <body>
   <h3>Sensor value over time</h3>
-  <canvas id="graph" width="600" height="300"></canvas>
+  <canvas id="graph"></canvas>
 
   <script>
     const canvas = document.getElementById('graph');
     const ctx = canvas.getContext('2d');
 
-    const width = canvas.width;
-    const height = canvas.height;
+    let width, height;
+    width = canvas.width;
+    height = canvas.height;
 
     let data = []; // масив {time, value}
     const maxPoints = 200; // кількість точок на графіку
-    const padding = 40; // для осей
+    const padding = Math.max(30, height * 0.12); // для осей
+
+    // 🔹 функція адаптації розміру
+    function resizeCanvas() {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+
+      canvas.width  = Math.max(300, w * 0.8);
+      canvas.height = Math.max(200, h * 0.7);
+
+      width  = canvas.width;
+      height = canvas.height;
+    }
+
+    // встановлення розміру графіка при старті
+    resizeCanvas();
+
+    // зміна розміру графіка при зміні розміру вікна
+    window.addEventListener('resize', () => {
+      resizeCanvas();
+      drawGraph();
+    });
 
     // SSE підключення
     const evtSource = new EventSource("/stream");
@@ -266,8 +255,20 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       drawGraph();
     };
 
+    function getFontSize() {
+      // % від висоти canvas
+      return Math.max(10, Math.floor(height * 0.04));
+    }
+
     function drawGraph() {
       if (data.length === 0) return;
+
+      const fontSize = getFontSize();
+      ctx.font = fontSize + "px Arial";
+
+      // 🔹 гарантуємо актуальні розміри
+      width = canvas.width;
+      height = canvas.height;
 
       ctx.clearRect(0, 0, width, height);
 
@@ -279,7 +280,31 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       const range = max - min || 1;
       min -= 0.1*range;
       max += 0.1*range;
+      // ---------- сітка --------------------
+      ctx.strokeStyle = "#ddd";   // світло-сірий
+      ctx.lineWidth = 1;
 
+      ctx.beginPath();
+
+      // горизонтальні лінії (OY)
+      const stepsY = 5;
+      for (let i = 0; i <= stepsY; i++) {
+        const y = padding + (height - 2 * padding) * i / stepsY;
+        ctx.moveTo(padding, y);
+        ctx.lineTo(width, y);
+      }
+
+      // вертикальні лінії (OX)
+      const stepsX = 5;
+      for (let i = 0; i <= stepsX; i++) {
+        const x = padding + (width - 2 * padding) * i / stepsX;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height - padding);
+      }
+
+      ctx.stroke();
+
+      // -------------------------------------
       // координатні осі
       ctx.strokeStyle = "#000";
       ctx.beginPath();
@@ -292,6 +317,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       ctx.fillStyle = "#000";
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
+      ctx.font = (fontSize * 1.0) + "px Arial";
       const step = 5;
       for (let i=0; i<=step; i++) {
         const y = padding + (height - 2*padding)*(step-i)/step;
@@ -306,6 +332,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       // підписи OX (час)
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
+      ctx.font = (fontSize * 0.9) + "px Arial";
       const timeStep = 5; // 5 поділок
       const startTime = data[0].time;
       const endTime = data[data.length-1].time;
@@ -390,8 +417,20 @@ void handleInfo() {
 
 
 void handleSave() {
-  strncpy(cfg.wifi.ssid, server.arg("s").c_str(), 31);
-  strncpy(cfg.wifi.password, server.arg("p").c_str(), 31);
+  
+  String newSsid = server.arg("s");
+  
+  if (newSsid.length() > 0) {
+    strncpy(cfg.wifi.ssid, newSsid.c_str(), 31);
+    cfg.wifi.ssid[31] = '\0';
+  }
+
+  String newPass = server.arg("p");
+
+  if (newPass.length() > 0) {
+    strncpy(cfg.wifi.password, newPass.c_str(), 31);
+    cfg.wifi.password[31] = '\0';
+  }
 
   // зберігаємо наявність чек-бокса "en" на сторінці конфіга
   // (якщо чек-бокс вимкнений, то параметр взагалі не приходить.
@@ -431,10 +470,6 @@ float readSensor() {
   return v;
 }
 
-
-
-
-
 //=============================================================
 
 void setup() {
@@ -444,7 +479,7 @@ void setup() {
   Serial.begin(9600);
 
   loadConfig();
-  setupWiFi();
+  setupWiFi(cfg);
 
   server.on("/", handleRoot);
   server.on("/config", handleConfig);
