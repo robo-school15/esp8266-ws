@@ -222,8 +222,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     let data = []; // масив {time, value}
     const maxPoints = 200; // кількість точок на графіку
-    const padding = Math.max(30, height * 0.12); // для осей
-
+    
     // 🔹 функція адаптації розміру
     function resizeCanvas() {
       const w = window.innerWidth;
@@ -263,9 +262,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     function drawGraph() {
       if (data.length === 0) return;
 
-      const fontSize = getFontSize();
-      ctx.font = fontSize + "px Arial";
-
       // 🔹 гарантуємо актуальні розміри
       width = canvas.width;
       height = canvas.height;
@@ -280,6 +276,32 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       const range = max - min || 1;
       min -= 0.1*range;
       max += 0.1*range;
+
+      // шрифти
+      const fontSize = getFontSize();
+      ctx.font = fontSize + "px Arial";
+
+      // 🔹 функція форматування
+      function formatValue(v) {
+        if (range > 100) return v.toFixed(0);
+        if (range > 10)  return v.toFixed(1);
+        return v.toFixed(2);
+      }
+
+      // 🔹 визначаємо ширину підписів
+      let maxLabelWidth = 0;
+      const steps = 5;
+
+      for (let i = 0; i <= steps; i++) {
+        const val = min + (max - min) * i / steps;
+        const text = formatValue(val);
+        const w = ctx.measureText(text).width;
+        if (w > maxLabelWidth) maxLabelWidth = w;
+      }
+      // 🔹 динамічний padding
+      const padding = Math.max(30, maxLabelWidth + 10);
+
+      
       // ---------- сітка --------------------
       ctx.strokeStyle = "#ddd";   // світло-сірий
       ctx.lineWidth = 1;
