@@ -36,6 +36,12 @@ const char* def_graph_title = "Sensor value";
 // кодове слово для перевірки цілісності конфіга в EEPROM
 #define CONFIG_MAGIC 0xDEADBEEF
 
+enum SensorMode {
+  MODE_DEMO = 0,
+  MODE_GPIO0 = 1,
+  MODE_GPIO2 = 2
+};
+
 struct Config {
 
   uint32_t magic;
@@ -57,8 +63,10 @@ struct Config {
 
   struct ui {
     char deviceName[32];   // SSID точки доступу
-    char graphTitle[64];   // заголовок графіка
+    char graphTitle[96];   // заголовок графіка
   } ui;
+  
+  SensorMode mode; 
 };
 
 Config cfg;
@@ -81,6 +89,8 @@ void setDefaults( Config& cfg ) {
 
   strcpy(cfg.ui.deviceName, ap_ssid);
   strcpy(cfg.ui.graphTitle, def_graph_title);
+
+  cfg.mode = MODE_DEMO;   // за замовчуванням – демо
 }
 
 
@@ -96,6 +106,9 @@ void globalInit() {
   cfg.filter.enabled = false;
   cfg.filter.alpha = 0.2;
   cfg.sensor.intervalMs = STREAM_DEF_INTERVAL;
+  strcpy(cfg.ui.deviceName, ap_ssid);
+  strcpy(cfg.ui.graphTitle, def_graph_title);   
+  cfg.mode = MODE_DEMO;
 }
 
 
@@ -169,57 +182,61 @@ void saveConfig() {
 // і як клієнт, який з'єднується з мережею через інший wifi-роутер, параметри доступу якого
 // задані в wificfg.  
 void setupWiFi(Config& cfg) {
-  
-  if ( !cfg.wifi.enabled ) { 
-    WiFi.mode(WIFI_AP);
+        
+    // Завжди піднімаємо AP з фіксованим IP
+    WiFi.mode(WIFI_AP_STA); // AP + STA
+    IPAddress apIP(192,168,4,1);
+    IPAddress netMsk(255,255,255,0);
+    WiFi.softAPConfig(apIP, apIP, netMsk);
     WiFi.softAP(cfg.ui.deviceName, ap_pass);
-    return;
-  }
 
-  //Встановлюємо режим AP + STA і намагаємось з'єднатись з точкою доступу.
-  //Якщо за певний таймаут з'єднання не вдається, переходимо в режим AP.
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(cfg.ui.deviceName, ap_pass);
+    Serial.println("AP started");
+    Serial.println("AP IP: " + WiFi.softAPIP().toString());
 
-  Serial.println("setupWiFi:");
+    //Якщо WiFi увімкнено і задано SSID, підключаємося до STA
+    if (cfg.wifi.enabled && strlen(cfg.wifi.ssid) > 0) {
+        Serial.println("Connecting to external WiFi...");
+        Serial.println("SSID: " + String(cfg.wifi.ssid));
+        //Serial.println("Password: " + String(cfg.wifi.password));
 
-  if (cfg.wifi.enabled && strlen(cfg.wifi.ssid) > 0) {
-    // Виводимо в монітор комп'ютера для перевірки (відладки)
-    Serial.println("ssid=" + String(cfg.wifi.ssid));
-    Serial.println("password="+ String(cfg.wifi.password));
+        WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
 
-    WiFi.begin(cfg.wifi.ssid, cfg.wifi.password);
+        unsigned long start = millis();
+        const unsigned long timeout = 15000; // 15 сек
+        while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeout) {
+            delay(500);
+            Serial.print(".");
+        }
 
-    bool wifiConnecting = true;
-    unsigned long now = millis();
-    unsigned long wifiConnectStart = now;
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println();
+            Serial.println("STA Connected!");
+            Serial.println("STA IP: " + WiFi.localIP().toString());
 
-    // Чекаємо приєднання до віддаленої точки доступу
-    while (WiFi.status() != WL_CONNECTED && wifiConnecting){
-      delay(500);
-      Serial.print(".");
-      now = millis();
-      if (now - wifiConnectStart > 15000) {  // не вдалось приєднатись протягом 15 сек.
-        WiFi.disconnect();
-        WiFi.mode(WIFI_AP);   // тільки точка доступу
-        wifiConnecting = false;
-      }
+            //Перезапускаємо AP після підключення STA
+            WiFi.softAPdisconnect(true);
+            delay(500);
+            WiFi.softAP(cfg.ui.deviceName, ap_pass);
+            Serial.println("AP restarted after STA connect");
+            Serial.println("AP IP: " + WiFi.softAPIP().toString());
+        } else {
+            Serial.println();
+            Serial.println("STA connection failed, staying in AP mode");
+        }
     }
-    
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("WIFI Connected");
-    }
-    
-    Serial.println("IP: " + WiFi.localIP().toString());
-  }
+
+    //Додатково вимикаємо sleep для стабільності
+    WiFi.setSleep(false);
 }
+
+
 
 const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Sensor Graph</title>
+  <title>%TITLE%</title>
   <style>
     body { font-family: sans-serif; }
     canvas { border: 1px solid black; }
@@ -422,7 +439,11 @@ void handleStream() {
 
 // HTTP-handlers:
 void handleRoot() {
-  server.send_P(200, "text/html", INDEX_HTML);
+  String page = FPSTR(INDEX_HTML);
+  page.replace("%TITLE%", String(cfg.ui.graphTitle));
+  server.send(200, "text/html", page);
+  //server.send_P(200, "text/html", INDEX_HTML);
+  
 }
 
 void handleConfig() {
@@ -438,6 +459,12 @@ void handleConfig() {
     
     "SSID:<br><input name='s' value='" + String(cfg.wifi.ssid) + "'><br>"
     "PASS:<br><input name='p' type='password'><br><br>"
+
+    "<b>Sensor mode:</b><br>"
+    "<label><input type='radio' name='mode' value='0' " + String(cfg.mode == MODE_DEMO ? "checked" : "") + "> Demo</label><br>"
+    "<label><input type='radio' name='mode' value='1' " + String(cfg.mode == MODE_GPIO0 ? "checked" : "") + "> GPIO0</label><br>"
+    "<label><input type='radio' name='mode' value='2' " + String(cfg.mode == MODE_GPIO2 ? "checked" : "") + "> GPIO2</label><br><br>"
+    
     "<label>"
     "<input type='checkbox' name='en' " + checked + ">"
     " Enable WiFi STA"
@@ -517,7 +544,8 @@ void handleSave() {
   }
 
   if (server.hasArg("gt")) {
-    strncpy(cfg.ui.graphTitle, server.arg("gt").c_str(), sizeof(cfg.ui.graphTitle));
+    strncpy(cfg.ui.graphTitle , server.arg("gt").c_str(), sizeof(cfg.ui.graphTitle)-1);
+    cfg.ui.graphTitle[sizeof(cfg.ui.graphTitle) - 1] = '\0';
   }
 
   if (server.hasArg("s")) {
@@ -530,6 +558,10 @@ void handleSave() {
   
   if (server.hasArg("p") && server.arg("p").length() > 0) {
     strncpy(cfg.wifi.password, server.arg("p").c_str(), sizeof(cfg.wifi.password));
+  }
+
+  if (server.hasArg("mode")) {
+    cfg.mode = (SensorMode) server.arg("mode").toInt();
   }
 
   // зберігаємо наявність чек-бокса "en" на сторінці конфіга
@@ -552,22 +584,35 @@ void handleSave() {
   if (server.hasArg("i")) {
     cfg.sensor.intervalMs = server.arg("i").toInt();
   }
-  // обмежуємо інтервал опитування датчика: 20..1000 мс
-  if (cfg.sensor.intervalMs < 20) cfg.sensor.intervalMs = 20;
-  if (cfg.sensor.intervalMs > 1000) cfg.sensor.intervalMs = 1000;
+  // обмежуємо інтервал опитування датчика: STREAM_MIN_INTERVAL..STREAM_MAX_INTERVAL мс
+  if (cfg.sensor.intervalMs < STREAM_MIN_INTERVAL) cfg.sensor.intervalMs = STREAM_MIN_INTERVAL;
+  if (cfg.sensor.intervalMs > STREAM_MAX_INTERVAL) cfg.sensor.intervalMs = STREAM_MAX_INTERVAL;
   
   saveConfig();
   server.send(200, "text/html", "Saved. Reboot device.");
 }
 
-// Читаємо сенсори (заглушка):
+// Читаємо сенсори
 float readSensor() {
-  // приклад
-  static float v = 0;
-  v += random(-3,4);
-  if (v < 0) v = 0;
-  if (v > 100) v = 100;
-  return v;
+  switch (cfg.mode) {
+
+    case MODE_DEMO: {
+      static float v = 50;
+      v += random(-3,4);
+      if (v < 0) v = 0;
+      if (v > 100) v = 100;
+      return v;
+    }
+
+    case MODE_GPIO0:
+      return analogRead(A0); // або твоя логіка
+
+    case MODE_GPIO2:
+      return digitalRead(2);
+
+    default:
+      return 0;
+  }
 }
 
 //=============================================================
@@ -596,9 +641,8 @@ const unsigned long WIFI_INTERVAL = 5000; // 5 сек; інтервал пере
 
 
 void loop() {
-  //Serial.println("hello");
+  
   server.handleClient();
-
 
   // Якщо активована необхідність з'єднання до зовнішньої точки доступу wifi
   if (cfg.wifi.enabled) {
@@ -624,7 +668,6 @@ void loop() {
       }
     }
   }
-
 
   // Для забезпечення SSE з'єднання при великих інтервалах опитування датчиків, посилаємо ping
   // (щоб браузер не закрив сокет по неактивності)
