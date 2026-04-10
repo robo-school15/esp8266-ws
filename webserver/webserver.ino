@@ -18,11 +18,23 @@
 #include <ESP8266WebServer.h>
 #include <EEPROM.h>
 
+// Бібліотеки для датчика температури ds18b20
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+
 // Конфігурація:
 #define EEPROM_SIZE 4096
-#define STREAM_MIN_INTERVAL 20    // ms
-#define STREAM_MAX_INTERVAL 1000  // ms
+#define STREAM_MIN_INTERVAL 20     // ms
+#define STREAM_MAX_INTERVAL 10000  // ms
 #define STREAM_DEF_INTERVAL 100    // ms
+
+
+//Створюємо глобальні змінні для датчика температури:
+// для зв’язку з пристроями OneWire
+OneWire* oneWire = nullptr;
+// для Dallas Temperature. 
+DallasTemperature* sensors = nullptr;
 
 ESP8266WebServer server(80);
 WiFiClient streamClient;
@@ -70,6 +82,27 @@ struct Config {
 };
 
 Config cfg;
+
+void initSensor() {
+  int pin;
+
+  switch (cfg.mode) {
+    case MODE_GPIO0: pin = 0; break;
+    case MODE_GPIO2: pin = 2; break;
+    default: return;
+  }
+
+  if (oneWire) delete oneWire;
+  if (sensors) delete sensors;
+
+  oneWire = new OneWire(pin);
+  sensors = new DallasTemperature(oneWire);
+  sensors->begin();
+
+  Serial.println("Sensor initialized on GPIO" + String(pin));
+};
+
+
 
 //Ініціалізація конфіга значеннями по змовчуванню
 void setDefaults( Config& cfg ) {
@@ -472,7 +505,7 @@ void handleConfig() {
     "<label><input type='checkbox' name='f' " + String(cfg.filter.enabled ? "checked" : "") + "> Enable filter</label><br><br>"
     "Alpha (0..1):<br><input name='a' value='" + String(cfg.filter.alpha, 2) + "'><br><br>"
 
-    "Interval (ms) [20..1000]: <br>"
+    "Interval (ms) [20..10000]: <br>"
     "<input name='i' value='" + String(cfg.sensor.intervalMs) + "'><br><br>"
     "<input type='submit' value='Save'></form>";
     
@@ -589,7 +622,37 @@ void handleSave() {
   if (cfg.sensor.intervalMs > STREAM_MAX_INTERVAL) cfg.sensor.intervalMs = STREAM_MAX_INTERVAL;
   
   saveConfig();
+  initSensor();
+  
   server.send(200, "text/html", "Saved. Reboot device.");
+}
+
+
+float readTemperature()
+{  
+  float tempC = 0.0;
+  if (!sensors) return NAN;
+  
+  Serial.print("Requesting temperatures...");
+  sensors->requestTemperatures(); // Команда для отримання температури
+  Serial.println("DONE");
+  // Отримавши температуру, ми можемо надрукувати її тут.
+  // Ми використовуємо функцію ByIndex,
+  // Отримуємо температуру тільки з першого датчика.
+  tempC = sensors->getTempCByIndex(0);
+
+  // Перевірка, чи успішно прочитано
+  if(tempC != DEVICE_DISCONNECTED_C) 
+  {
+    Serial.print("Temperature for the device 1 (index 0) is: ");
+    Serial.println(tempC);
+  } 
+  else
+  {
+    Serial.println("Error: Could not read temperature data");
+    return NAN;
+  }
+  return tempC;
 }
 
 // Читаємо сенсори
@@ -605,10 +668,10 @@ float readSensor() {
     }
 
     case MODE_GPIO0:
-      return analogRead(A0); // або твоя логіка
+      return readTemperature(); // або твоя логіка
 
     case MODE_GPIO2:
-      return digitalRead(2);
+      return readTemperature();
 
     default:
       return 0;
@@ -622,8 +685,12 @@ void setup() {
   globalInit();
   
   Serial.begin(9600);
-
+  // Ініціалізація бібліотеки датчика температури
+  
   loadConfig();
+
+  initSensor();
+  
   setupWiFi(cfg);
 
   server.on("/", handleRoot);
