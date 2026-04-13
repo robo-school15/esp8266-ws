@@ -344,6 +344,15 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       min -= 0.1*range;
       max += 0.1*range;
 
+      let minIndex = 0;
+      let maxIndex = 0;
+
+      for (let i = 1; i < data.length; i++) {
+        if (data[i].value < data[minIndex].value) minIndex = i;
+        if (data[i].value > data[maxIndex].value) maxIndex = i;
+      }
+
+
       // шрифти
       const fontSize = getFontSize();
       ctx.font = fontSize + "px Arial";
@@ -432,16 +441,58 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         ctx.fillText(label, x, height-padding+5);
       }
 
+        function getXY(i) {
+          const safeRange = (max - min) || 1;
+
+          const x = padding + (width - 2 * padding) * (i / Math.max(1, data.length - 1));
+          const y = padding + (height - 2 * padding) *
+                    (1 - (data[i].value - min) / safeRange);
+
+          return {x, y};
+        }
+
       // малюємо графік
       ctx.strokeStyle = "#f00";
       ctx.beginPath();
       data.forEach((d,i) => {
-        const x = padding + (width-2*padding)*(i/(data.length-1));
+        const x = padding + (width-2*padding)*(i/(Math.max(1, data.length-1)));
         const y = padding + (height-2*padding)*(1-(d.value-min)/(max-min));
         if (i===0) ctx.moveTo(x,y);
         else ctx.lineTo(x,y);
       });
       ctx.stroke();
+
+      // --- МІНІМУМ ---
+let pMin = getXY(minIndex);
+
+ctx.fillStyle = "blue";
+ctx.beginPath();
+ctx.arc(pMin.x, pMin.y, 5, 0, 2 * Math.PI);
+ctx.fill();
+
+ctx.fillStyle = "blue";
+ctx.textAlign = "left";
+ctx.fillText(
+  "min: " + formatValue(data[minIndex].value),
+  pMin.x + 8,
+  pMin.y - 8
+);
+
+// --- МАКСИМУМ ---
+let pMax = getXY(maxIndex);
+
+ctx.fillStyle = "red";
+ctx.beginPath();
+ctx.arc(pMax.x, pMax.y, 5, 0, 2 * Math.PI);
+ctx.fill();
+
+ctx.fillStyle = "red";
+ctx.fillText(
+  "max: " + formatValue(data[maxIndex].value),
+  pMax.x + 8,
+  pMax.y - 8
+);
+       
     }
   </script> 
 </body>
