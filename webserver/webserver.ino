@@ -270,51 +270,90 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <head>
   <meta charset="UTF-8">
   <title>%TITLE%</title>
-  <style>
-    body { font-family: sans-serif; }
-    canvas { border: 1px solid black; }
-  </style>
+ <style>
+  body {
+    font-family: sans-serif;
+    text-align: center;
+    margin: 0;
+    padding: 0;
+  }
+
+  #container {
+    display: flex;
+    justify-content: center;
+    align-items: stretch;
+    width: 100%;
+  }
+
+  canvas {
+    border: 1px solid black;
+  }
+
+  #tempPanel {
+    width: 180px;
+    border: 1px solid black;
+    margin-left: 10px;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+
+    font-size: 48px;
+    font-weight: bold;
+
+    background: #f5f5f5;
+  }
+</style>
 </head>
 <body>
   <h3>Sensor value over time</h3>
-  <canvas id="graph"></canvas>
+
+  <div id="container">
+    <canvas id="graph"></canvas>
+
+    <div id="tempPanel">
+      --.-°C
+    </div>
+  </div>
 
   <script>
     const canvas = document.getElementById('graph');
     const ctx = canvas.getContext('2d');
+    const tempPanel = document.getElementById('tempPanel');
 
     let width, height;
-    width = canvas.width;
-    height = canvas.height;
+    let data = [];
+    const maxPoints = 200;
 
-    let data = []; // масив {time, value}
-    const maxPoints = 200; // кількість точок на графіку
-    
-    // 🔹 функція адаптації розміру
     function resizeCanvas() {
       const w = window.innerWidth;
       const h = window.innerHeight;
 
       canvas.width  = Math.max(300, w * 0.8);
       canvas.height = Math.max(200, h * 0.7);
+      tempPanel.style.height = canvas.height + "px";
 
       width  = canvas.width;
       height = canvas.height;
     }
 
-    // встановлення розміру графіка при старті
     resizeCanvas();
 
-    // зміна розміру графіка при зміні розміру вікна
     window.addEventListener('resize', () => {
       resizeCanvas();
       drawGraph();
     });
 
-    // SSE підключення
     const evtSource = new EventSource("/stream");
     evtSource.onmessage = function(e) {
       const val = parseFloat(e.data);
+      tempPanel.innerHTML = val.toFixed(1) + "°C";
+
+      if (val < 0)
+         tempPanel.style.color = "blue";
+      else
+         tempPanel.style.color = "red";
+      
       const now = Date.now();
       data.push({time: now, value: val});
       if (data.length > maxPoints) data.shift();
@@ -322,24 +361,20 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     };
 
     function getFontSize() {
-      // % від висоти canvas
-      return Math.max(10, Math.floor(height * 0.04));
+     return Math.max(12, Math.floor(height / 36));
     }
 
     function drawGraph() {
       if (data.length === 0) return;
 
-      // 🔹 гарантуємо актуальні розміри
       width = canvas.width;
       height = canvas.height;
 
       ctx.clearRect(0, 0, width, height);
 
-      // знаходимо min/max для автоскейлу
       let min = Math.min(...data.map(d=>d.value));
       let max = Math.max(...data.map(d=>d.value));
 
-      // невеликий запас зверху/знизу
       const range = max - min || 1;
       min -= 0.1*range;
       max += 0.1*range;
@@ -352,58 +387,51 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         if (data[i].value > data[maxIndex].value) maxIndex = i;
       }
 
-
-      // шрифти
       const fontSize = getFontSize();
-      ctx.font = fontSize + "px Arial";
 
-      // 🔹 функція форматування
       function formatValue(v) {
         if (range > 100) return v.toFixed(0);
         if (range > 10)  return v.toFixed(1);
         return v.toFixed(2);
       }
 
-      // 🔹 визначаємо ширину підписів
       let maxLabelWidth = 0;
       const steps = 5;
 
+      ctx.font = fontSize + "px Arial";
+
       for (let i = 0; i <= steps; i++) {
         const val = min + (max - min) * i / steps;
-        const text = formatValue(val);
-        const w = ctx.measureText(text).width;
+        const w = ctx.measureText(formatValue(val)).width;
         if (w > maxLabelWidth) maxLabelWidth = w;
       }
-      // 🔹 динамічний padding
-      const padding = Math.max(30, maxLabelWidth + 10);
+      const padding = 50;
+    
+
+    
 
       
-      // ---------- сітка --------------------
-      ctx.strokeStyle = "#ddd";   // світло-сірий
-      ctx.lineWidth = 1;
 
+      // --- СІТКА ---
+      ctx.strokeStyle = "#ddd";
+      ctx.lineWidth = 1;
       ctx.beginPath();
 
-      // горизонтальні лінії (OY)
-      const stepsY = 5;
-      for (let i = 0; i <= stepsY; i++) {
-        const y = padding + (height - 2 * padding) * i / stepsY;
+      for (let i = 0; i <= 5; i++) {
+        const y = padding + (height - 2 * padding) * i / 5;
         ctx.moveTo(padding, y);
         ctx.lineTo(width, y);
       }
 
-      // вертикальні лінії (OX)
-      const stepsX = 5;
-      for (let i = 0; i <= stepsX; i++) {
-        const x = padding + (width - 2 * padding) * i / stepsX;
+      for (let i = 0; i <= 5; i++) {
+        const x = padding + (width - 2 * padding) * i / 5;
         ctx.moveTo(x, 0);
         ctx.lineTo(x, height - padding);
       }
 
       ctx.stroke();
 
-      // -------------------------------------
-      // координатні осі
+      // --- ОСІ ---
       ctx.strokeStyle = "#000";
       ctx.beginPath();
       ctx.moveTo(padding, 0);
@@ -411,88 +439,84 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       ctx.lineTo(width, height-padding);
       ctx.stroke();
 
-      // підписи OY
-      ctx.fillStyle = "#000";
-      ctx.textAlign = "right";
-      ctx.textBaseline = "middle";
-      ctx.font = (fontSize * 1.0) + "px Arial";
-      const step = 5;
-      for (let i=0; i<=step; i++) {
-        const y = padding + (height - 2*padding)*(step-i)/step;
-        const val = min + (max-min)*i/step;
-        ctx.fillText(val.toFixed(1), padding-5, y);
-        ctx.beginPath();
-        ctx.moveTo(padding-3, y);
-        ctx.lineTo(padding, y);
-        ctx.stroke();
-      }
+     
 
-      // підписи OX (час)
+      // --- ПІДПИС Y ---
+      ctx.fillStyle = "#000";
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      ctx.font = (fontSize * 0.9) + "px Arial";
-      const timeStep = 5; // 5 поділок
+      ctx.font = (fontSize * 1.4) + "px Arial";
+      ctx.fillText("Температура (°C)", width / 2, 5);
+
+      
+
+      // --- ПОДІЛКИ X ---
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.font = (fontSize * 1.1) + "px Arial";
+
       const startTime = data[0].time;
       const endTime = data[data.length-1].time;
-      for (let i=0; i<=timeStep; i++) {
-        const x = padding + (width-2*padding)*i/timeStep;
-        const t = new Date(startTime + (endTime-startTime)*i/timeStep);
+
+      for (let i=0; i<=5; i++) {
+        const x = padding + (width-2*padding)*i/5;
+        const t = new Date(startTime + (endTime-startTime)*i/5);
         const label = t.getMinutes() + ":" + t.getSeconds();
         ctx.fillText(label, x, height-padding+5);
       }
 
-        function getXY(i) {
-          const safeRange = (max - min) || 1;
+      // --- ПІДПИС X ---
+      ctx.textBaseline = "bottom";
+      ctx.font = (fontSize * 1.2) + "px Arial";
+      ctx.fillText("Час", width / 2, height - 2);
 
-          const x = padding + (width - 2 * padding) * (i / Math.max(1, data.length - 1));
-          const y = padding + (height - 2 * padding) *
-                    (1 - (data[i].value - min) / safeRange);
+      function getXY(i) {
+        const safeRange = (max - min) || 1;
 
-          return {x, y};
-        }
+        const x = padding + (width - 2 * padding) * (i / Math.max(1, data.length - 1));
+        const y = padding + (height - 2 * padding) *
+                  (1 - (data[i].value - min) / safeRange);
 
-      // малюємо графік
+        return {x, y};
+      }
+
+      // --- ГРАФІК ---
+      const safeRange = (max - min) || 1;
+
       ctx.strokeStyle = "#f00";
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
       ctx.beginPath();
+
       data.forEach((d,i) => {
         const x = padding + (width-2*padding)*(i/(Math.max(1, data.length-1)));
-        const y = padding + (height-2*padding)*(1-(d.value-min)/(max-min));
+        const y = padding + (height-2*padding)*(1-(d.value-min)/safeRange);
         if (i===0) ctx.moveTo(x,y);
         else ctx.lineTo(x,y);
       });
+
       ctx.stroke();
+      ctx.lineWidth = 1;
 
-      // --- МІНІМУМ ---
-let pMin = getXY(minIndex);
+      // --- MIN ---
+      let pMin = getXY(minIndex);
 
-ctx.fillStyle = "blue";
-ctx.beginPath();
-ctx.arc(pMin.x, pMin.y, 5, 0, 2 * Math.PI);
-ctx.fill();
+      ctx.fillStyle = "blue";
+      ctx.beginPath();
+      ctx.arc(pMin.x, pMin.y, 5, 0, 2 * Math.PI);
+      ctx.fill();
 
-ctx.fillStyle = "blue";
-ctx.textAlign = "left";
-ctx.fillText(
-  "min: " + formatValue(data[minIndex].value),
-  pMin.x + 8,
-  pMin.y - 8
-);
+      ctx.fillText("min: " + formatValue(data[minIndex].value), pMin.x + 8, pMin.y - 8);
 
-// --- МАКСИМУМ ---
-let pMax = getXY(maxIndex);
+      // --- MAX ---
+      let pMax = getXY(maxIndex);
 
-ctx.fillStyle = "red";
-ctx.beginPath();
-ctx.arc(pMax.x, pMax.y, 5, 0, 2 * Math.PI);
-ctx.fill();
+      ctx.fillStyle = "red";
+      ctx.beginPath();
+      ctx.arc(pMax.x, pMax.y, 5, 0, 2 * Math.PI);
+      ctx.fill();
 
-ctx.fillStyle = "red";
-ctx.fillText(
-  "max: " + formatValue(data[maxIndex].value),
-  pMax.x + 8,
-  pMax.y - 8
-);
-       
+      ctx.fillText("max: " + formatValue(data[maxIndex].value), pMax.x + 8, pMax.y - 8);
     }
   </script> 
 </body>
